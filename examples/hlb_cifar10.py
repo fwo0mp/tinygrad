@@ -207,73 +207,41 @@ def train_cifar():
     low_x = Tensor.randint(BS, low=0, high=W-crop_size)
     low_y = Tensor.randint(BS, low=0, high=H-crop_size)
     
-    # Original numpy implementation
-    idx_x = Tensor.arange(W, dtype=dtypes.int32).reshape((1,1,1,W))
-    idx_y = Tensor.arange(H, dtype=dtypes.int32).reshape((1,1,H,1))
-    mask = (idx_x >= low_x.reshape(BS,1,1,1)) * (idx_x < (low_x.reshape(BS,1,1,1) + crop_size)) * (idx_y >= low_y.reshape(BS,1,1,1)) * (idx_y < (low_y.reshape(BS,1,1,1) + crop_size))
-    mask = mask.expand((-1,3,-1,-1))
-    X_cropped_numpy = Tensor(X.numpy()[mask.numpy()])
-    X_cropped_numpy = X_cropped_numpy.reshape((-1, 3, crop_size, crop_size))
+    # Create coordinate grids for the crop
+    x_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, 1, crop_size).expand(BS, C, crop_size, crop_size)
+    y_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, crop_size, 1).expand(BS, C, crop_size, crop_size)
     
-    if getenv("TINY_CIFAR"):
-      # New tinygrad-native implementation
-      
-      # Create coordinate grids for the crop
-      x_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, 1, crop_size).expand(BS, C, crop_size, crop_size)
-      y_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, crop_size, 1).expand(BS, C, crop_size, crop_size)
-      
-      # Add the random offsets to get absolute coordinates
-      abs_x = x_coords + low_x.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
-      abs_y = y_coords + low_y.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
-      
-      # Use gather to extract the cropped regions
-      # Flatten spatial dimensions for gathering
-      X_flat = X.reshape(BS, C, H*W)
-      indices = abs_y * W + abs_x  # Convert 2D coordinates to 1D indices
-      indices_flat = indices.reshape(BS, C, crop_size*crop_size)
-      
-      # Gather the values and reshape
-      X_cropped_tinygrad = X_flat.gather(2, indices_flat)
-      X_cropped_tinygrad = X_cropped_tinygrad.reshape(BS, C, crop_size, crop_size)
-      
-      # Assert equivalence
-      assert X_cropped_numpy.shape == X_cropped_tinygrad.shape
-      np.testing.assert_allclose(X_cropped_numpy.numpy(), X_cropped_tinygrad.numpy(), rtol=1e-6, atol=1e-6)
-      return X_cropped_tinygrad
+    # Add the random offsets to get absolute coordinates
+    abs_x = x_coords + low_x.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
+    abs_y = y_coords + low_y.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
     
-    return X_cropped_numpy
+    # Use gather to extract the cropped regions
+    # Flatten spatial dimensions for gathering
+    X_flat = X.reshape(BS, C, H*W)
+    indices = abs_y * W + abs_x  # Convert 2D coordinates to 1D indices
+    indices_flat = indices.reshape(BS, C, crop_size*crop_size)
+    
+    # Gather the values and reshape
+    return X_flat.gather(2, indices_flat).reshape(BS, C, crop_size, crop_size)
+
 
   def cutmix(X:Tensor, Y:Tensor, mask_size=3):
-    # Original numpy implementation
     mask = make_square_mask(X.shape, mask_size)
     order = list(range(0, X.shape[0]))
     random.shuffle(order)
-    X_patch_numpy = Tensor(X.numpy()[order], device=X.device, dtype=X.dtype)
-    Y_patch_numpy = Tensor(Y.numpy()[order], device=Y.device, dtype=Y.dtype)
-    X_cutmix_numpy = mask.where(X_patch_numpy, X)
     mix_portion = float(mask_size**2)/(X.shape[-2]*X.shape[-1])
-    Y_cutmix_numpy = mix_portion * Y_patch_numpy + (1. - mix_portion) * Y
+  
+    BS = X.shape[0]
+    # Create shuffled indices using tinygrad operations
+    shuffle_indices = Tensor.randint(BS, low=0, high=BS)
+    # Use gather to shuffle X and Y
+    X_patch = X.gather(shuffle_indices.reshape(BS, 1, 1, 1).expand(X.shape), dim=0)
+    Y_patch = Y.gather(shuffle_indices.reshape(BS, 1).expand(Y.shape), dim=0)
     
-    if getenv("TINY_CIFAR"):
-      # New tinygrad-native implementation
-      BS = X.shape[0]
-      # Create shuffled indices using tinygrad operations
-      shuffle_indices = Tensor.randint(BS, low=0, high=BS)
-      # Use gather to shuffle X and Y
-      X_patch_tinygrad = X.gather(shuffle_indices.reshape(BS, 1, 1, 1).expand(X.shape), dim=0)
-      Y_patch_tinygrad = Y.gather(shuffle_indices.reshape(BS, 1).expand(Y.shape), dim=0)
-      
-      X_cutmix_tinygrad = mask.where(X_patch_tinygrad, X)
-      Y_cutmix_tinygrad = mix_portion * Y_patch_tinygrad + (1. - mix_portion) * Y
-      
-      # Assert equivalence
-      assert X_cutmix_numpy.shape == X_cutmix_tinygrad.shape
-      assert Y_cutmix_numpy.shape == Y_cutmix_tinygrad.shape
-      np.testing.assert_allclose(X_cutmix_numpy.numpy(), X_cutmix_tinygrad.numpy(), rtol=1e-6, atol=1e-6)
-      np.testing.assert_allclose(Y_cutmix_numpy.numpy(), Y_cutmix_tinygrad.numpy(), rtol=1e-6, atol=1e-6)
-      return X_cutmix_tinygrad, Y_cutmix_tinygrad
+    X_cutmix = mask.where(X_patch, X)
+    Y_cutmix = mix_portion * Y_patch + (1. - mix_portion) * Y
     
-    return X_cutmix_numpy, Y_cutmix_numpy
+    return X_cutmix, Y_cutmix
 
   # the operations that remain inside batch fetcher is the ones that involves random operations
   def fetch_batches(X_in:Tensor, Y_in:Tensor, BS:int, is_train:bool):
