@@ -227,8 +227,6 @@ def train_cifar():
 
   def cutmix(X:Tensor, Y:Tensor, mask_size=3):
     mask = make_square_mask(X.shape, mask_size)
-    order = list(range(0, X.shape[0]))
-    random.shuffle(order)
     mix_portion = float(mask_size**2)/(X.shape[-2]*X.shape[-1])
   
     BS = X.shape[0]
