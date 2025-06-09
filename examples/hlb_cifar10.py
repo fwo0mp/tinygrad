@@ -202,44 +202,25 @@ def train_cifar():
     return (idx_x >= low_x) * (idx_x < (low_x + mask_size)) * (idx_y >= low_y) * (idx_y < (low_y + mask_size))
 
   def random_crop(X:Tensor, crop_size=32):
-    # Generate random starting positions for each sample in the batch (shared between implementations)
     BS, C, H, W = X.shape
     low_x = Tensor.randint(BS, low=0, high=W-crop_size)
     low_y = Tensor.randint(BS, low=0, high=H-crop_size)
-    
-    # Create coordinate grids for the crop
     x_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, 1, crop_size).expand(BS, C, crop_size, crop_size)
     y_coords = Tensor.arange(crop_size, dtype=dtypes.int32).reshape(1, 1, crop_size, 1).expand(BS, C, crop_size, crop_size)
-    
-    # Add the random offsets to get absolute coordinates
     abs_x = x_coords + low_x.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
     abs_y = y_coords + low_y.reshape(BS, 1, 1, 1).expand(BS, C, crop_size, crop_size)
-    
-    # Use gather to extract the cropped regions
-    # Flatten spatial dimensions for gathering
-    X_flat = X.reshape(BS, C, H*W)
-    indices = abs_y * W + abs_x  # Convert 2D coordinates to 1D indices
-    indices_flat = indices.reshape(BS, C, crop_size*crop_size)
-    
-    # Gather the values and reshape
-    return X_flat.gather(2, indices_flat).reshape(BS, C, crop_size, crop_size)
+    indices = (abs_y * W + abs_x).reshape(BS, C, crop_size*crop_size)
+    return X.reshape(BS, C, H*W).gather(2, indices).reshape(BS, C, crop_size, crop_size)
 
 
   def cutmix(X:Tensor, Y:Tensor, mask_size=3):
     mask = make_square_mask(X.shape, mask_size)
     mix_portion = float(mask_size**2)/(X.shape[-2]*X.shape[-1])
-  
     BS = X.shape[0]
-    # Create shuffled indices using tinygrad operations
     shuffle_indices = Tensor.randint(BS, low=0, high=BS)
-    # Use gather to shuffle X and Y
     X_patch = X.gather(shuffle_indices.reshape(BS, 1, 1, 1).expand(X.shape), dim=0)
     Y_patch = Y.gather(shuffle_indices.reshape(BS, 1).expand(Y.shape), dim=0)
-    
-    X_cutmix = mask.where(X_patch, X)
-    Y_cutmix = mix_portion * Y_patch + (1. - mix_portion) * Y
-    
-    return X_cutmix, Y_cutmix
+    return mask.where(X_patch, X), mix_portion * Y_patch + (1. - mix_portion) * Y
 
   # the operations that remain inside batch fetcher is the ones that involves random operations
   def fetch_batches(X_in:Tensor, Y_in:Tensor, BS:int, is_train:bool):
